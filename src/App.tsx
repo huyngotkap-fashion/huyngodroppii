@@ -1,5 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
+  Layout,
+  Smartphone,
+  Monitor,
+  Facebook,
+  Instagram,
+  Youtube,
+  Linkedin,
+  Twitter,
   Type, 
   Image as ImageIcon, 
   Square, 
@@ -60,6 +68,17 @@ const FONTS = [
   'Bungee'
 ];
 
+const BANNER_TEMPLATES = [
+  { id: 'fb-cover', name: 'Facebook Cover', width: 820, height: 312, icon: Facebook, desc: '820 x 312 px' },
+  { id: 'ig-post', name: 'Instagram Post', width: 1080, height: 1080, icon: Instagram, desc: '1080 x 1080 px' },
+  { id: 'ig-story', name: 'Instagram Story', width: 1080, height: 1920, icon: Smartphone, desc: '1080 x 1920 px' },
+  { id: 'yt-banner', name: 'YouTube Banner', width: 2560, height: 1440, icon: Youtube, desc: '2560 x 1440 px' },
+  { id: 'li-cover', name: 'LinkedIn Cover', width: 1584, height: 396, icon: Linkedin, desc: '1584 x 396 px' },
+  { id: 'tw-header', name: 'Twitter Header', width: 1500, height: 500, icon: Twitter, desc: '1500 x 500 px' },
+  { id: 'web-leader', name: 'Leaderboard', width: 728, height: 90, icon: Layout, desc: '728 x 90 px' },
+  { id: 'web-rect', name: 'Large Rectangle', width: 336, height: 280, icon: Monitor, desc: '336 x 280 px' },
+];
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [fabricCanvas, setFabricCanvas] = useState<Canvas | null>(null);
@@ -68,8 +87,9 @@ export default function App() {
   const [bgColor, setBgColor] = useState('#ffffff');
   const [selectedObject, setSelectedObject] = useState<FabricObject | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth >= 768);
-  const [activeTab, setActiveTab] = useState<'size' | 'text' | 'image' | 'shapes' | 'layers' | 'frame'>('size');
+  const [activeTab, setActiveTab] = useState<'size' | 'text' | 'image' | 'shapes' | 'layers' | 'frame' | 'banners'>('size');
   const [isMobile, setIsMobile] = useState(false);
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [zoomScale, setZoomScale] = useState(1);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -125,6 +145,23 @@ export default function App() {
   const historyStepRef = useRef(-1);
 
   const triggerRefresh = () => setRefresh(v => v + 1);
+
+  const closeSidebarOnMobile = () => {
+    if (window.innerWidth < 768) {
+      setSidebarOpen(false);
+    }
+  };
+
+  const applyBannerTemplate = (width: number, height: number) => {
+    setCanvasWidth(width);
+    setCanvasHeight(height);
+    if (fabricCanvas) {
+      // We don't clear the canvas, just resize it
+      // The useEffect for canvasWidth/Height will handle the zoom and dimensions
+      triggerRefresh();
+      closeSidebarOnMobile();
+    }
+  };
 
   // Save History
   const saveHistory = () => {
@@ -316,6 +353,7 @@ export default function App() {
       });
       fabricCanvas.add(text);
       fabricCanvas.setActiveObject(text);
+      closeSidebarOnMobile();
     }
   };
 
@@ -336,6 +374,7 @@ export default function App() {
           });
           fabricCanvas.add(img);
           fabricCanvas.setActiveObject(img);
+          closeSidebarOnMobile();
         });
       };
       reader.readAsDataURL(file);
@@ -372,6 +411,7 @@ export default function App() {
     }
     fabricCanvas.add(shape);
     fabricCanvas.setActiveObject(shape);
+    closeSidebarOnMobile();
   };
 
   // Apply Mask
@@ -411,6 +451,7 @@ export default function App() {
         fabricCanvas.setActiveObject(img);
         fabricCanvas.renderAll();
         saveHistory();
+        closeSidebarOnMobile();
         
         // Force UI update to show mask controls
         setSelectedObject(null);
@@ -571,6 +612,7 @@ export default function App() {
       fabricCanvas.setActiveObject(frame);
       fabricCanvas.renderAll();
       saveHistory();
+      closeSidebarOnMobile();
     }
   };
 
@@ -618,6 +660,7 @@ export default function App() {
       link.download = `thiet-ke-${multiplier}x.png`;
       link.href = dataURL;
       link.click();
+      closeSidebarOnMobile();
     }
   };
 
@@ -931,6 +974,50 @@ export default function App() {
 
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
 
+  // Pinch to Zoom state
+  const touchState = useRef({
+    initialDistance: 0,
+    initialZoom: 1,
+    isPinching: false
+  });
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const dist = Math.hypot(
+        e.touches[0].pageX - e.touches[1].pageX,
+        e.touches[0].pageY - e.touches[1].pageY
+      );
+      touchState.current = {
+        initialDistance: dist,
+        initialZoom: zoomScale,
+        isPinching: true
+      };
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (touchState.current.isPinching && e.touches.length === 2 && fabricCanvas) {
+      const dist = Math.hypot(
+        e.touches[0].pageX - e.touches[1].pageX,
+        e.touches[0].pageY - e.touches[1].pageY
+      );
+      const scale = dist / touchState.current.initialDistance;
+      const newZoom = Math.min(Math.max(touchState.current.initialZoom * scale, 0.1), 4);
+      
+      setZoomScale(newZoom);
+      fabricCanvas.setZoom(newZoom);
+      fabricCanvas.setDimensions({ 
+        width: canvasWidth * newZoom, 
+        height: canvasHeight * newZoom 
+      });
+      fabricCanvas.renderAll();
+    }
+  };
+
+  const handleTouchEnd = () => {
+    touchState.current.isPinching = false;
+  };
+
   return (
     <div className="flex flex-col md:flex-row h-screen bg-[#0f0f12] text-white font-sans overflow-hidden">
       {/* Sidebar - Desktop: fixed left, Mobile: Bottom Sheet (Canva-style) */}
@@ -953,16 +1040,17 @@ export default function App() {
             <div className="flex-1 overflow-y-auto px-6 py-4 md:py-6 space-y-6">
               {/* Desktop Tabs */}
               {!isMobile && (
-                <div className="flex bg-black/20 p-1 rounded-xl gap-1">
-                  {(['size', 'text', 'image', 'shapes', 'frame', 'layers'] as const).map((tab) => (
+                <div className="flex bg-black/20 p-1 rounded-xl gap-1 overflow-x-auto no-scrollbar">
+                  {(['size', 'banners', 'text', 'image', 'shapes', 'frame', 'layers'] as const).map((tab) => (
                     <button
                       key={tab}
                       onClick={() => setActiveTab(tab)}
-                      className={`flex-1 py-2 rounded-lg text-[10px] font-medium transition-all ${
+                      className={`flex-1 py-2 px-2 rounded-lg text-[10px] font-medium transition-all whitespace-nowrap ${
                         activeTab === tab ? 'bg-indigo-600 text-white shadow-md' : 'text-zinc-500 hover:text-zinc-300'
                       }`}
                     >
                       {tab === 'size' && 'Cỡ'}
+                      {tab === 'banners' && 'Banner'}
                       {tab === 'text' && 'Chữ'}
                       {tab === 'image' && 'Ảnh'}
                       {tab === 'shapes' && 'Hình'}
@@ -978,6 +1066,7 @@ export default function App() {
                 <div className="flex items-center justify-between mb-2">
                   <h2 className="text-lg font-bold text-white capitalize">
                     {activeTab === 'size' && 'Kích thước & Nền'}
+                    {activeTab === 'banners' && 'Mẫu Banner'}
                     {activeTab === 'text' && 'Văn bản'}
                     {activeTab === 'image' && 'Hình ảnh'}
                     {activeTab === 'shapes' && 'Hình khối'}
@@ -991,6 +1080,29 @@ export default function App() {
               )}
 
           <div className="space-y-6 overflow-hidden">
+            {activeTab === 'banners' && (
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2">Chọn mẫu kích thước</p>
+                <div className="grid grid-cols-1 gap-3">
+                  {BANNER_TEMPLATES.map((template) => (
+                    <button
+                      key={template.id}
+                      onClick={() => applyBannerTemplate(template.width, template.height)}
+                      className="flex items-center gap-4 p-4 bg-zinc-900 hover:bg-indigo-600/20 border border-white/5 rounded-2xl transition-all group text-left"
+                    >
+                      <div className="w-10 h-10 bg-zinc-800 rounded-xl flex items-center justify-center group-hover:bg-indigo-600 transition-colors">
+                        <template.icon className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-bold text-white">{template.name}</p>
+                        <p className="text-[10px] text-zinc-500">{template.desc}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+
             {activeTab === 'size' && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
                 <div className="space-y-2">
@@ -1951,6 +2063,9 @@ export default function App() {
         {/* Canvas Area */}
         <div 
           ref={containerRef}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
           className="flex-1 bg-[#0f0f12] relative overflow-auto flex flex-col items-center justify-center p-4 md:p-12 scrollbar-hide pattern-grid"
         >
           <div className="absolute top-4 left-4 md:top-8 md:left-8 flex items-center gap-2 text-zinc-500 text-[10px] font-bold uppercase tracking-widest opacity-40 pointer-events-none">
@@ -2194,6 +2309,7 @@ export default function App() {
                 {[
                   { id: 'size', icon: Maximize, label: 'Cỡ' },
                   { id: 'text', icon: Type, label: 'Chữ' },
+                  { id: 'layers', icon: Layers, label: 'Lớp' },
                 ].map((item) => (
                   <button
                     key={item.id}
@@ -2230,15 +2346,20 @@ export default function App() {
                 {[
                   { id: 'image', icon: ImageIcon, label: 'Ảnh' },
                   { id: 'shapes', icon: SquareIcon, label: 'Hình' },
+                  { id: 'menu', icon: Menu, label: 'Thêm' },
                 ].map((item) => (
                   <button
                     key={item.id}
                     onClick={() => {
-                      setActiveTab(item.id as any);
-                      setSidebarOpen(true);
+                      if (item.id === 'menu') {
+                        setShowMobileMenu(true);
+                      } else {
+                        setActiveTab(item.id as any);
+                        setSidebarOpen(true);
+                      }
                     }}
                     className={`flex flex-col items-center gap-1 transition-all active:scale-90 ${
-                      activeTab === item.id && sidebarOpen ? 'text-indigo-400' : 'text-zinc-500'
+                      (activeTab === item.id || (item.id === 'menu' && showMobileMenu)) && sidebarOpen ? 'text-indigo-400' : 'text-zinc-500'
                     }`}
                   >
                     <item.icon className="w-5 h-5" />
@@ -2247,6 +2368,57 @@ export default function App() {
                 ))}
               </div>
             </div>
+
+            {/* Mobile More Menu Modal */}
+            <AnimatePresence>
+              {showMobileMenu && (
+                <div className="fixed inset-0 z-[120] flex items-end justify-center p-4 bg-black/60 backdrop-blur-sm">
+                  <motion.div 
+                    initial={{ y: '100%' }}
+                    animate={{ y: 0 }}
+                    exit={{ y: '100%' }}
+                    className="w-full bg-[#1a1a1e] rounded-t-3xl overflow-hidden shadow-2xl"
+                  >
+                    <div className="p-4 border-b border-white/5 flex items-center justify-between">
+                      <h3 className="text-lg font-bold">Menu mở rộng</h3>
+                      <button onClick={() => setShowMobileMenu(false)} className="p-2 bg-white/5 rounded-full">
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+                    <div className="p-6 grid grid-cols-3 gap-4">
+                      {[
+                        { id: 'banners', icon: Layout, label: 'Mẫu Banner' },
+                        { id: 'frame', icon: Frame, label: 'Khung hình' },
+                        { id: 'layers', icon: Layers, label: 'Lớp đối tượng' },
+                        { id: 'size', icon: Settings2, label: 'Cài đặt canvas' },
+                        { id: 'export', icon: Download, label: 'Xuất ảnh', action: () => setExportMenuOpen(true) },
+                        { id: 'save', icon: Save, label: 'Lưu dự án', action: saveProject },
+                        { id: 'open', icon: Upload, label: 'Mở dự án', action: () => document.getElementById('mobile-project-upload')?.click() },
+                      ].map((item) => (
+                        <button
+                          key={item.id}
+                          onClick={() => {
+                            if (item.action) {
+                              item.action();
+                            } else {
+                              setActiveTab(item.id as any);
+                              setSidebarOpen(true);
+                            }
+                            setShowMobileMenu(false);
+                          }}
+                          className="flex flex-col items-center gap-2 p-4 bg-zinc-900 rounded-2xl hover:bg-indigo-600/20 transition-all"
+                        >
+                          <item.icon className="w-6 h-6 text-indigo-400" />
+                          <span className="text-[10px] font-medium text-center">{item.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <input type="file" id="mobile-project-upload" className="hidden" accept=".json" onChange={loadProject} />
+                    <div className="h-8" /> {/* Safe area spacer */}
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
           </div>
 
           {/* Status Bar */}
