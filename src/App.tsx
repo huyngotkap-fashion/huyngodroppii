@@ -199,7 +199,7 @@ export default function App() {
   // Save History
   const saveHistory = () => {
     if (!fabricCanvas || isHistoryAction.current) return;
-    const json = JSON.stringify(fabricCanvas.toJSON());
+    const json = JSON.stringify((fabricCanvas as any).toJSON(['id', 'selectable', 'evented', 'lockMovementX', 'lockMovementY', 'lockScalingX', 'lockScalingY', 'lockRotation', 'hasControls', 'clipPath', 'name', 'data']));
     
     // Don't save if it's the same as the current step
     if (historyRef.current[historyStepRef.current] === json) return;
@@ -351,7 +351,7 @@ export default function App() {
       // History listeners
       const handleHistorySave = () => {
         if (!canvas || isHistoryAction.current) return;
-        const json = JSON.stringify(canvas.toJSON());
+        const json = JSON.stringify((canvas as any).toJSON(['id', 'selectable', 'evented', 'lockMovementX', 'lockMovementY', 'lockScalingX', 'lockScalingY', 'lockRotation', 'hasControls', 'clipPath', 'name', 'data']));
         
         if (historyRef.current[historyStepRef.current] === json) return;
 
@@ -390,7 +390,7 @@ export default function App() {
       setFabricCanvas(canvas);
       
       // Initial history save
-      const initialJson = JSON.stringify(canvas.toJSON());
+      const initialJson = JSON.stringify((canvas as any).toJSON(['id', 'selectable', 'evented', 'lockMovementX', 'lockMovementY', 'lockScalingX', 'lockScalingY', 'lockRotation', 'hasControls', 'clipPath', 'name', 'data']));
       historyRef.current = [initialJson];
       historyStepRef.current = 0;
       setHistory([initialJson]);
@@ -835,6 +835,7 @@ export default function App() {
     const activeObject = fabricCanvas.getActiveObject();
     if (activeObject && activeObject instanceof Group) {
       const activeSelection = (activeObject as any).toActiveSelection();
+      fabricCanvas.remove(activeObject);
       fabricCanvas.setActiveObject(activeSelection);
       fabricCanvas.requestRenderAll();
       saveHistory();
@@ -847,6 +848,7 @@ export default function App() {
     const activeObject = fabricCanvas.getActiveObject();
     if (activeObject && activeObject instanceof ActiveSelection) {
       const group = (activeObject as any).toGroup();
+      fabricCanvas.add(group);
       fabricCanvas.setActiveObject(group);
       fabricCanvas.requestRenderAll();
       saveHistory();
@@ -888,7 +890,7 @@ export default function App() {
       return;
     }
     if (fabricCanvas) {
-      const json = fabricCanvas.toJSON(['id', 'selectable', 'lockMovementX', 'lockMovementY', 'lockScalingX', 'lockScalingY', 'lockRotation', 'hasControls', 'clipPath', 'name', 'data']);
+      const json = (fabricCanvas as any).toJSON(['id', 'selectable', 'evented', 'lockMovementX', 'lockMovementY', 'lockScalingX', 'lockScalingY', 'lockRotation', 'hasControls', 'clipPath', 'name', 'data']);
       // Add custom metadata
       const projectData = {
         version: '1.0',
@@ -913,7 +915,7 @@ export default function App() {
       
       // Trigger save after setting name
       if (fabricCanvas) {
-        const json = fabricCanvas.toJSON(['id', 'selectable', 'lockMovementX', 'lockMovementY', 'lockScalingX', 'lockScalingY', 'lockRotation', 'hasControls', 'clipPath', 'name', 'data']);
+        const json = (fabricCanvas as any).toJSON(['id', 'selectable', 'evented', 'lockMovementX', 'lockMovementY', 'lockScalingX', 'lockScalingY', 'lockRotation', 'hasControls', 'clipPath', 'name', 'data']);
         const projectData = {
           version: '1.0',
           canvasWidth,
@@ -1225,6 +1227,8 @@ export default function App() {
           lockScalingY: value,
           lockRotation: value,
           hasControls: !value,
+          selectable: !value,
+          evented: !value,
         });
         setIsLocked(value);
       } else if (selectedObject instanceof IText) {
@@ -2264,6 +2268,8 @@ export default function App() {
                                       lockScalingY: newLock,
                                       lockRotation: newLock,
                                       hasControls: !newLock,
+                                      selectable: !newLock,
+                                      evented: !newLock,
                                     });
                                     if (isSelected) setIsLocked(newLock);
                                     fabricCanvas.renderAll();
@@ -3175,3 +3181,4 @@ export default function App() {
       </div>
     );
   }
+
