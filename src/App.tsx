@@ -56,9 +56,15 @@ import {
   Menu,
   X,
   Square as SquareIcon,
+  FileText,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Canvas, IText, FabricImage, Object as FabricObject, Circle, Rect, Polygon, Gradient, Triangle, ActiveSelection, Group } from 'fabric';
+import * as pdfjsLib from 'pdfjs-dist';
+import { jsPDF } from 'jspdf';
+
+// Set worker path
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.js`;
 
 const FONTS = [
   'Inter',
@@ -258,11 +264,11 @@ export default function App() {
       });
 
       canvas.on('selection:created', (e) => {
-        setSelectedObject(e.selected?.[0] || null);
+        setSelectedObject(canvas.getActiveObject() || null);
         setActivePropertyPopover(null);
       });
       canvas.on('selection:updated', (e) => {
-        setSelectedObject(e.selected?.[0] || null);
+        setSelectedObject(canvas.getActiveObject() || null);
         setActivePropertyPopover(null);
       });
       canvas.on('selection:cleared', () => {
@@ -537,6 +543,51 @@ export default function App() {
         });
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && fabricCanvas) {
+      const reader = new FileReader();
+      reader.onload = async (f) => {
+        try {
+          const data = new Uint8Array(f.target?.result as ArrayBuffer);
+          const loadingTask = pdfjsLib.getDocument({ data });
+          const pdf = await loadingTask.promise;
+          
+          // Load all pages or just the first one? Let's start with first page
+          // We can iterate through all pages if needed
+          const page = await pdf.getPage(1);
+          const viewport = page.getViewport({ scale: 2 }); // High quality
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+          
+          await page.render({ canvasContext: context!, viewport }).promise;
+          const imgData = canvas.toDataURL('image/png');
+          
+          FabricImage.fromURL(imgData).then((img) => {
+            img.scaleToWidth(canvasWidth / 2);
+            img.set({
+              left: canvasWidth / 2,
+              top: canvasHeight / 2,
+              originX: 'center',
+              originY: 'center',
+            });
+            fabricCanvas.add(img);
+            fabricCanvas.setActiveObject(img);
+            fabricCanvas.requestRenderAll();
+            saveHistory();
+            triggerRefresh();
+          });
+        } catch (error) {
+          console.error('Error loading PDF:', error);
+          alert('Không thể tải file PDF. Vui lòng thử lại.');
+        }
+      };
+      reader.readAsArrayBuffer(file);
     }
   };
 
@@ -867,8 +918,6 @@ export default function App() {
   // Export
   const exportImage = (multiplier: number = 2) => {
     if (fabricCanvas) {
-      // Temporarily set zoom to 1 for high quality export if needed?
-      // Actually multiplier handles it, but we want to ensure we get the full resolution.
       const dataURL = fabricCanvas.toDataURL({
         format: 'png',
         quality: 1,
@@ -878,6 +927,23 @@ export default function App() {
       link.download = `thiet-ke-${multiplier}x.png`;
       link.href = dataURL;
       link.click();
+      closeSidebarOnMobile();
+    }
+  };
+
+  const exportPdf = () => {
+    if (fabricCanvas) {
+      const dataURL = fabricCanvas.toDataURL({
+        format: 'png',
+        multiplier: 2,
+      });
+      const pdf = new jsPDF({
+        orientation: canvasWidth > canvasHeight ? 'landscape' : 'portrait',
+        unit: 'px',
+        format: [canvasWidth, canvasHeight],
+      });
+      pdf.addImage(dataURL, 'PNG', 0, 0, canvasWidth, canvasHeight);
+      pdf.save(`${projectName}.pdf`);
       closeSidebarOnMobile();
     }
   };
@@ -936,16 +1002,64 @@ export default function App() {
   const loadProject = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file && fabricCanvas) {
-      // Set project name from filename (remove extension)
       const fileName = file.name.replace(/\.[^/.]+$/, "");
       setProjectName(fileName);
+
+      if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+        const reader = new FileReader();
+        reader.onload = async (f) => {
+          try {
+            const data = new Uint8Array(f.target?.result as ArrayBuffer);
+            const loadingTask = pdfjsLib.getDocument({ data });
+            const pdf = await loadingTask.promise;
+            const page = await pdf.getPage(1);
+            const viewport = page.getViewport({ scale: 2 });
+            
+            // Set canvas size to PDF size
+            setCanvasWidth(viewport.width / 2);
+            setCanvasHeight(viewport.height / 2);
+            
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+            
+            await page.render({ canvasContext: context!, viewport }).promise;
+            const imgData = canvas.toDataURL('image/png');
+            
+            FabricImage.fromURL(imgData).then((img) => {
+              fabricCanvas.clear();
+              fabricCanvas.backgroundColor = '#ffffff';
+              setBgColor('#ffffff');
+              
+              img.set({
+                left: viewport.width / 4,
+                top: viewport.height / 4,
+                scaleX: 0.5,
+                scaleY: 0.5,
+                originX: 'center',
+                originY: 'center',
+              });
+              fabricCanvas.add(img);
+              fabricCanvas.setActiveObject(img);
+              fabricCanvas.requestRenderAll();
+              saveHistory();
+              triggerRefresh();
+            });
+          } catch (error) {
+            console.error('Error loading PDF as project:', error);
+            alert('Không thể mở file PDF. Vui lòng thử lại.');
+          }
+        };
+        reader.readAsArrayBuffer(file);
+        return;
+      }
 
       const reader = new FileReader();
       reader.onload = (f) => {
         try {
           const data = JSON.parse(f.target?.result as string);
           
-          // Handle both old format (direct JSON) and new format (with metadata)
           const fabricJSON = data.fabricJSON || data;
           
           if (data.canvasWidth) setCanvasWidth(data.canvasWidth);
@@ -959,13 +1073,10 @@ export default function App() {
           fabricCanvas.backgroundColor = data.bgColor || '#ffffff';
           
           fabricCanvas.loadFromJSON(fabricJSON).then(() => {
-            // Force a re-render and zoom update
             fabricCanvas.renderAll();
             saveHistory();
-            // Trigger a refresh to update UI
             triggerRefresh();
             
-            // Re-apply zoom after load to ensure it fits the container
             setTimeout(() => {
               setRefresh(prev => prev + 1);
             }, 100);
@@ -1665,13 +1776,23 @@ export default function App() {
 
             {activeTab === 'image' && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
-                <label className="w-full py-6 border-2 border-dashed border-white/10 hover:border-indigo-500/50 hover:bg-indigo-500/5 rounded-2xl transition-all flex flex-col items-center justify-center gap-2 group cursor-pointer">
-                  <div className="w-10 h-10 bg-zinc-800 rounded-xl flex items-center justify-center group-hover:bg-indigo-600 transition-colors">
-                    <Plus className="w-5 h-5" />
-                  </div>
-                  <span className="text-sm font-medium">Tải ảnh lên</span>
-                  <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
-                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="py-6 border-2 border-dashed border-white/10 hover:border-indigo-500/50 hover:bg-indigo-500/5 rounded-2xl transition-all flex flex-col items-center justify-center gap-2 group cursor-pointer">
+                    <div className="w-10 h-10 bg-zinc-800 rounded-xl flex items-center justify-center group-hover:bg-indigo-600 transition-colors">
+                      <Plus className="w-5 h-5" />
+                    </div>
+                    <span className="text-[10px] font-medium">Tải ảnh</span>
+                    <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
+                  </label>
+
+                  <label className="py-6 border-2 border-dashed border-white/10 hover:border-indigo-500/50 hover:bg-indigo-500/5 rounded-2xl transition-all flex flex-col items-center justify-center gap-2 group cursor-pointer">
+                    <div className="w-10 h-10 bg-zinc-800 rounded-xl flex items-center justify-center group-hover:bg-indigo-600 transition-colors">
+                      <FileText className="w-5 h-5" />
+                    </div>
+                    <span className="text-[10px] font-medium">Tải PDF</span>
+                    <input type="file" className="hidden" accept="application/pdf" onChange={handlePdfUpload} />
+                  </label>
+                </div>
 
                 <button 
                   onClick={applyMask}
@@ -2449,7 +2570,7 @@ export default function App() {
               <label className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 rounded-xl text-sm font-medium flex items-center gap-2 transition-all cursor-pointer">
                 <Upload className="w-4 h-4" />
                 Mở dự án
-                <input type="file" className="hidden" accept=".json" onChange={loadProject} />
+                <input type="file" className="hidden" accept=".json,.pdf" onChange={loadProject} />
               </label>
               <button 
                 onClick={saveProject}
@@ -2497,6 +2618,17 @@ export default function App() {
                           </span>
                         </button>
                       ))}
+                      <div className="h-px bg-white/5 my-1" />
+                      <button
+                        onClick={() => {
+                          exportPdf();
+                          setExportMenuOpen(false);
+                        }}
+                        className="w-full px-4 py-3 text-left hover:bg-indigo-600 rounded-xl transition-colors flex items-center justify-between group"
+                      >
+                        <span className="text-xs font-medium">Xuất file PDF</span>
+                        <FileText className="w-4 h-4 text-zinc-500 group-hover:text-white/70" />
+                      </button>
                     </div>
                   </motion.div>
                 )}
@@ -3140,7 +3272,7 @@ export default function App() {
                         </button>
                       ))}
                     </div>
-                    <input type="file" id="mobile-project-upload" className="hidden" accept=".json" onChange={loadProject} />
+                    <input type="file" id="mobile-project-upload" className="hidden" accept=".json,.pdf" onChange={loadProject} />
                     <div className="h-8" /> {/* Safe area spacer */}
                   </motion.div>
                 </div>
