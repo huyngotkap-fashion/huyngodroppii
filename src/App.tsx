@@ -56,7 +56,7 @@ import {
   Square as SquareIcon,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Canvas, IText, FabricImage, Object as FabricObject, Circle, Rect, Polygon, Gradient, Triangle } from 'fabric';
+import { Canvas, IText, FabricImage, Object as FabricObject, Circle, Rect, Polygon, Gradient, Triangle, ActiveSelection } from 'fabric';
 
 const FONTS = [
   'Inter',
@@ -91,6 +91,8 @@ export default function App() {
   const [isMobile, setIsMobile] = useState(false);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [zoomScale, setZoomScale] = useState(1);
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [targetMaskObject, setTargetMaskObject] = useState<FabricObject | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -160,6 +162,32 @@ export default function App() {
       // The useEffect for canvasWidth/Height will handle the zoom and dimensions
       triggerRefresh();
       closeSidebarOnMobile();
+    }
+  };
+
+  const fitToCanvas = () => {
+    if (fabricCanvas && selectedObject) {
+      const canvasW = canvasWidth;
+      const canvasH = canvasHeight;
+      const objW = selectedObject.width || 1;
+      const objH = selectedObject.height || 1;
+      
+      // Calculate scale to cover the canvas without distortion
+      const scale = Math.max(canvasW / objW, canvasH / objH);
+      
+      selectedObject.set({
+        scaleX: scale,
+        scaleY: scale,
+        angle: 0,
+        // Center the object
+        left: (canvasW - objW * scale) / 2,
+        top: (canvasH - objH * scale) / 2
+      });
+      
+      selectedObject.setCoords();
+      fabricCanvas.requestRenderAll();
+      saveHistory();
+      triggerRefresh();
     }
   };
 
@@ -365,15 +393,103 @@ export default function App() {
       reader.onload = (f) => {
         const data = f.target?.result as string;
         FabricImage.fromURL(data).then((img) => {
-          img.scaleToWidth(200);
-          img.set({
-            left: canvasWidth / 2,
-            top: canvasHeight / 2,
-            originX: 'center',
-            originY: 'center',
-          });
-          fabricCanvas.add(img);
-          fabricCanvas.setActiveObject(img);
+          if (targetMaskObject) {
+            // Auto-apply mask to a new image using a shape
+            const mask = targetMaskObject;
+            mask.clone().then((clonedMask) => {
+              const maskFullWidth = mask.width! * mask.scaleX!;
+              const maskFullHeight = mask.height! * mask.scaleY!;
+              const scale = Math.max(maskFullWidth / img.width!, maskFullHeight / img.height!);
+              
+              img.set({
+                scaleX: scale,
+                scaleY: scale,
+                left: mask.left,
+                top: mask.top,
+                originX: mask.originX,
+                originY: mask.originY,
+              });
+
+              const relScaleX = mask.scaleX! / img.scaleX!;
+              const relScaleY = mask.scaleY! / img.scaleY!;
+
+              clonedMask.set({
+                left: 0,
+                top: 0,
+                scaleX: relScaleX,
+                scaleY: relScaleY,
+                originX: 'center',
+                originY: 'center',
+                absolutePositioned: false,
+              });
+              
+              img.set({ clipPath: clonedMask });
+              fabricCanvas.remove(mask);
+              fabricCanvas.add(img);
+              fabricCanvas.setActiveObject(img);
+              setTargetMaskObject(null);
+              fabricCanvas.requestRenderAll();
+              saveHistory();
+            });
+          } else if (selectedObject && selectedObject instanceof FabricImage && selectedObject.clipPath) {
+            // Replace image inside an existing mask
+            const oldImg = selectedObject as FabricImage;
+            const mask = oldImg.clipPath;
+            
+            // Calculate absolute mask size
+            const absMaskWidth = mask.absolutePositioned 
+              ? mask.width! * mask.scaleX! 
+              : mask.width! * mask.scaleX! * oldImg.scaleX!;
+            const absMaskHeight = mask.absolutePositioned 
+              ? mask.height! * mask.scaleY! 
+              : mask.height! * mask.scaleY! * oldImg.scaleY!;
+            
+            // New scale for the new image to cover the mask
+            const newScale = Math.max(absMaskWidth / img.width!, absMaskHeight / img.height!);
+            
+            oldImg.setSrc(data).then(() => {
+              const element = oldImg.getElement();
+              if (element) {
+                oldImg.set({
+                  width: element.width,
+                  height: element.height,
+                  scaleX: newScale,
+                  scaleY: newScale
+                });
+                
+                // Update clipPath scale to maintain absolute size
+                if (mask.absolutePositioned) {
+                  mask.set({
+                    scaleX: absMaskWidth / mask.width!,
+                    scaleY: absMaskHeight / mask.height!
+                  });
+                } else {
+                  mask.set({
+                    scaleX: absMaskWidth / (mask.width! * newScale),
+                    scaleY: absMaskHeight / (mask.height! * newScale)
+                  });
+                }
+              }
+              oldImg.setCoords();
+              oldImg.dirty = true;
+              fabricCanvas.requestRenderAll();
+              saveHistory();
+              triggerRefresh();
+            });
+          } else {
+            // Standard image add
+            img.scaleToWidth(200);
+            img.set({
+              left: canvasWidth / 2,
+              top: canvasHeight / 2,
+              originX: 'center',
+              originY: 'center',
+            });
+            fabricCanvas.add(img);
+            fabricCanvas.setActiveObject(img);
+            fabricCanvas.requestRenderAll();
+            saveHistory();
+          }
           closeSidebarOnMobile();
         });
       };
@@ -564,18 +680,49 @@ export default function App() {
       reader.onload = (f) => {
         const data = f.target?.result as string;
         const img = selectedObject as FabricImage;
-        img.setSrc(data).then(() => {
-          const element = img.getElement();
-          if (element) {
-            img.set({
-              width: element.width,
-              height: element.height
-            });
-          }
-          img.setCoords();
-          fabricCanvas.renderAll();
-          saveHistory();
-          triggerRefresh();
+        const mask = img.clipPath;
+        
+        FabricImage.fromURL(data).then((newImg) => {
+          // Calculate absolute mask size
+          const absMaskWidth = mask.absolutePositioned 
+            ? mask.width! * mask.scaleX! 
+            : mask.width! * mask.scaleX! * img.scaleX!;
+          const absMaskHeight = mask.absolutePositioned 
+            ? mask.height! * mask.scaleY! 
+            : mask.height! * mask.scaleY! * img.scaleY!;
+          
+          // New scale for the new image to cover the mask
+          const newScale = Math.max(absMaskWidth / newImg.width!, absMaskHeight / newImg.height!);
+          
+          img.setSrc(data).then(() => {
+            const element = img.getElement();
+            if (element) {
+              img.set({
+                width: element.width,
+                height: element.height,
+                scaleX: newScale,
+                scaleY: newScale
+              });
+              
+              // Update clipPath scale to maintain absolute size
+              if (mask.absolutePositioned) {
+                mask.set({
+                  scaleX: absMaskWidth / mask.width!,
+                  scaleY: absMaskHeight / mask.height!
+                });
+              } else {
+                mask.set({
+                  scaleX: absMaskWidth / (mask.width! * newScale),
+                  scaleY: absMaskHeight / (mask.height! * newScale)
+                });
+              }
+            }
+            img.setCoords();
+            img.dirty = true;
+            fabricCanvas.requestRenderAll();
+            saveHistory();
+            triggerRefresh();
+          });
         });
       };
       reader.readAsDataURL(file);
@@ -1815,10 +1962,22 @@ export default function App() {
                     </div>
 
                     <div className="p-4 bg-black/20 rounded-2xl space-y-4">
-                      <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Danh sách lớp</p>
+                      <div className="flex items-center justify-between">
+                        <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Danh sách lớp</p>
+                        <button 
+                          onClick={() => setMultiSelectMode(!multiSelectMode)}
+                          className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all flex items-center gap-2 ${
+                            multiSelectMode ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'bg-zinc-800 text-zinc-400 border border-white/5'
+                          }`}
+                        >
+                          <Layers className="w-3 h-3" />
+                          {multiSelectMode ? 'Đang chọn nhiều' : 'Chọn nhiều'}
+                        </button>
+                      </div>
                       <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                         {fabricCanvas.getObjects().slice().reverse().map((obj, idx) => {
-                          const isSelected = selectedObject === obj;
+                          const activeObjects = fabricCanvas.getActiveObjects();
+                          const isSelected = activeObjects.includes(obj);
                           const isObjLocked = !!obj.lockMovementX;
                           let icon = <FileImage className="w-3 h-3" />;
                           let name = "Hình ảnh";
@@ -1840,9 +1999,36 @@ export default function App() {
                           return (
                             <div 
                               key={idx}
-                              onClick={() => {
-                                fabricCanvas.setActiveObject(obj);
-                                fabricCanvas.renderAll();
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                
+                                if (multiSelectMode) {
+                                  const activeObjects = fabricCanvas.getActiveObjects();
+                                  let newSelection = [...activeObjects];
+                                  
+                                  const isAlreadySelected = newSelection.some(o => o === obj);
+                                  
+                                  if (isAlreadySelected) {
+                                    newSelection = newSelection.filter(o => o !== obj);
+                                  } else {
+                                    newSelection.push(obj);
+                                  }
+                                  
+                                  fabricCanvas.discardActiveObject();
+                                  if (newSelection.length > 1) {
+                                    const selection = new ActiveSelection(newSelection, { 
+                                      canvas: fabricCanvas,
+                                    });
+                                    fabricCanvas.setActiveObject(selection);
+                                  } else if (newSelection.length === 1) {
+                                    fabricCanvas.setActiveObject(newSelection[0]);
+                                  }
+                                } else {
+                                  fabricCanvas.setActiveObject(obj);
+                                }
+                                fabricCanvas.requestRenderAll();
+                                triggerRefresh();
                               }}
                               className={`group flex items-center justify-between p-2 rounded-xl transition-all cursor-pointer border ${
                                 isSelected 
@@ -2113,6 +2299,18 @@ export default function App() {
           onTouchEnd={handleTouchEnd}
           className="flex-1 bg-[#0f0f12] relative overflow-auto flex flex-col items-center justify-center p-4 md:p-12 scrollbar-hide pattern-grid"
         >
+          {targetMaskObject && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[100] px-4 py-2 bg-indigo-600 text-white rounded-full text-[10px] font-bold shadow-2xl flex items-center gap-2 animate-bounce">
+              <Scissors className="w-3 h-3" />
+              Đang chờ ảnh để làm Mask...
+              <button 
+                onClick={() => setTargetMaskObject(null)}
+                className="ml-2 p-1 hover:bg-white/20 rounded-full"
+              >
+                <Plus className="w-3 h-3 rotate-45" />
+              </button>
+            </div>
+          )}
           <div className="absolute top-4 left-4 md:top-8 md:left-8 flex items-center gap-2 text-zinc-500 text-[10px] font-bold uppercase tracking-widest opacity-40 pointer-events-none">
             <Maximize className="w-3 h-3" />
             Khu vực thiết kế ({canvasWidth}x{canvasHeight}) - {Math.round(zoomScale * 100)}%
@@ -2189,6 +2387,37 @@ export default function App() {
                       >
                         <Scissors className="w-4 h-4" />
                         Sửa Mask
+                      </button>
+                      <div className="w-px h-4 bg-white/10 mx-1" />
+                    </>
+                  )}
+                  {selectedObject && !(selectedObject instanceof FabricImage) && !(selectedObject instanceof IText) && (
+                    <>
+                      <button 
+                        onClick={() => {
+                          setTargetMaskObject(selectedObject);
+                          setSidebarOpen(true);
+                          setActiveTab('image');
+                        }}
+                        className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all text-[10px] font-bold ${
+                          targetMaskObject === selectedObject ? 'bg-indigo-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:text-white'
+                        }`}
+                        title="Dùng làm Mask"
+                      >
+                        <Scissors className="w-4 h-4" />
+                        {targetMaskObject === selectedObject ? 'Đang chờ ảnh...' : 'Làm Mask'}
+                      </button>
+                      <div className="w-px h-4 bg-white/10 mx-1" />
+                    </>
+                  )}
+                  {selectedObject instanceof FabricImage && (
+                    <>
+                      <button 
+                        onClick={fitToCanvas}
+                        className="p-2 hover:bg-white/5 text-zinc-400 hover:text-white rounded-lg transition-colors"
+                        title="Toàn màn hình (Làm Banner)"
+                      >
+                        <Maximize className="w-4 h-4" />
                       </button>
                       <div className="w-px h-4 bg-white/10 mx-1" />
                     </>
@@ -2354,16 +2583,26 @@ export default function App() {
                 {[
                   { id: 'size', icon: Maximize, label: 'Cỡ' },
                   { id: 'text', icon: Type, label: 'Chữ' },
-                  { id: 'layers', icon: Layers, label: 'Lớp' },
+                  { id: 'multi', icon: Layers, label: 'Chọn nhiều', action: () => {
+                    setMultiSelectMode(!multiSelectMode);
+                    if (!multiSelectMode && activeTab !== 'layers') {
+                      setActiveTab('layers');
+                      setSidebarOpen(true);
+                    }
+                  }, active: multiSelectMode },
                 ].map((item) => (
                   <button
                     key={item.id}
                     onClick={() => {
-                      setActiveTab(item.id as any);
-                      setSidebarOpen(true);
+                      if (item.action) {
+                        item.action();
+                      } else {
+                        setActiveTab(item.id as any);
+                        setSidebarOpen(true);
+                      }
                     }}
                     className={`flex flex-col items-center gap-1 transition-all active:scale-90 ${
-                      activeTab === item.id && sidebarOpen ? 'text-indigo-400' : 'text-zinc-500'
+                      (item.active || (activeTab === item.id && sidebarOpen)) ? 'text-indigo-400' : 'text-zinc-500'
                     }`}
                   >
                     <item.icon className="w-5 h-5" />
@@ -2499,3 +2738,4 @@ export default function App() {
       </div>
     );
   }
+
