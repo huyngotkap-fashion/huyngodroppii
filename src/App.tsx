@@ -61,10 +61,12 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { Canvas, IText, FabricImage, Object as FabricObject, Circle, Rect, Polygon, Gradient, Triangle, ActiveSelection, Group } from 'fabric';
 import * as pdfjsLib from 'pdfjs-dist';
+// @ts-ignore
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { jsPDF } from 'jspdf';
 
 // Set worker path
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.js`;
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 const FONTS = [
   'Inter',
@@ -553,7 +555,12 @@ export default function App() {
       reader.onload = async (f) => {
         try {
           const data = new Uint8Array(f.target?.result as ArrayBuffer);
-          const loadingTask = pdfjsLib.getDocument({ data });
+          const loadingTask = pdfjsLib.getDocument({ 
+            data,
+            cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/cmaps/`,
+            cMapPacked: true,
+            standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/standard_fonts/`,
+          });
           const pdf = await loadingTask.promise;
           
           // Load all pages or just the first one? Let's start with first page
@@ -1010,7 +1017,12 @@ export default function App() {
         reader.onload = async (f) => {
           try {
             const data = new Uint8Array(f.target?.result as ArrayBuffer);
-            const loadingTask = pdfjsLib.getDocument({ data });
+            const loadingTask = pdfjsLib.getDocument({ 
+              data,
+              cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/cmaps/`,
+              cMapPacked: true,
+              standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/standard_fonts/`,
+            });
             const pdf = await loadingTask.promise;
             const page = await pdf.getPage(1);
             const viewport = page.getViewport({ scale: 2 });
@@ -3313,4 +3325,3 @@ export default function App() {
       </div>
     );
   }
-
