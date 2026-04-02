@@ -48,6 +48,8 @@ import {
   Eraser,
   Layers2,
   Check,
+  Combine,
+  Ungroup,
   Frame,
   Lock,
   Unlock,
@@ -56,7 +58,7 @@ import {
   Square as SquareIcon,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Canvas, IText, FabricImage, Object as FabricObject, Circle, Rect, Polygon, Gradient, Triangle, ActiveSelection } from 'fabric';
+import { Canvas, IText, FabricImage, Object as FabricObject, Circle, Rect, Polygon, Gradient, Triangle, ActiveSelection, Group } from 'fabric';
 
 const FONTS = [
   'Inter',
@@ -87,12 +89,15 @@ export default function App() {
   const [bgColor, setBgColor] = useState('#ffffff');
   const [selectedObject, setSelectedObject] = useState<FabricObject | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth >= 768);
-  const [activeTab, setActiveTab] = useState<'size' | 'text' | 'image' | 'shapes' | 'layers' | 'frame' | 'banners'>('size');
+  const [activeTab, setActiveTab] = useState<'size' | 'text' | 'image' | 'shapes' | 'layers' | 'banners'>('size');
   const [isMobile, setIsMobile] = useState(false);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [zoomScale, setZoomScale] = useState(1);
   const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [isMultiSelect, setIsMultiSelect] = useState(false);
+  const [isGroup, setIsGroup] = useState(false);
   const [targetMaskObject, setTargetMaskObject] = useState<FabricObject | null>(null);
+  const [activePropertyPopover, setActivePropertyPopover] = useState<'color' | 'font' | 'size' | 'stroke' | 'radius' | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -251,14 +256,51 @@ export default function App() {
         backgroundColor: bgColor,
       });
 
-      canvas.on('selection:created', (e) => setSelectedObject(e.selected?.[0] || null));
-      canvas.on('selection:updated', (e) => setSelectedObject(e.selected?.[0] || null));
-      canvas.on('selection:cleared', () => setSelectedObject(null));
+      canvas.on('selection:created', (e) => {
+        setSelectedObject(e.selected?.[0] || null);
+        setActivePropertyPopover(null);
+      });
+      canvas.on('selection:updated', (e) => {
+        setSelectedObject(e.selected?.[0] || null);
+        setActivePropertyPopover(null);
+      });
+      canvas.on('selection:cleared', () => {
+        setSelectedObject(null);
+        setActivePropertyPopover(null);
+      });
 
       canvas.on('mouse:dblclick', (e) => {
         const target = e.target || canvas.findTarget(e.e);
         if (target && target instanceof FabricImage && target.clipPath) {
           enterMaskEditMode(target as FabricImage);
+        }
+      });
+
+      canvas.on('mouse:down', (e) => {
+        if (multiSelectMode && e.target) {
+          const target = e.target;
+          const activeObjects = canvas.getActiveObjects();
+          let newSelection = [...activeObjects];
+          
+          const isAlreadySelected = newSelection.some(o => o === target);
+          
+          if (isAlreadySelected) {
+            newSelection = newSelection.filter(o => o !== target);
+          } else {
+            newSelection.push(target);
+          }
+          
+          canvas.discardActiveObject();
+          if (newSelection.length > 1) {
+            const selection = new ActiveSelection(newSelection, { 
+              canvas: canvas,
+            });
+            canvas.setActiveObject(selection);
+          } else if (newSelection.length === 1) {
+            canvas.setActiveObject(newSelection[0]);
+          }
+          canvas.requestRenderAll();
+          triggerRefresh();
         }
       });
 
@@ -787,6 +829,30 @@ export default function App() {
   };
 
   // Delete Selected
+  const ungroupSelected = () => {
+    if (!fabricCanvas) return;
+    const activeObject = fabricCanvas.getActiveObject();
+    if (activeObject && activeObject instanceof Group) {
+      const activeSelection = (activeObject as any).toActiveSelection();
+      fabricCanvas.setActiveObject(activeSelection);
+      fabricCanvas.requestRenderAll();
+      saveHistory();
+      triggerRefresh();
+    }
+  };
+
+  const groupSelected = () => {
+    if (!fabricCanvas) return;
+    const activeObject = fabricCanvas.getActiveObject();
+    if (activeObject && activeObject instanceof ActiveSelection) {
+      const group = (activeObject as any).toGroup();
+      fabricCanvas.setActiveObject(group);
+      fabricCanvas.requestRenderAll();
+      saveHistory();
+      triggerRefresh();
+    }
+  };
+
   const deleteSelected = () => {
     if (fabricCanvas && selectedObject) {
       fabricCanvas.remove(selectedObject);
@@ -873,14 +939,26 @@ export default function App() {
   // Duplication
   const duplicateSelected = () => {
     if (fabricCanvas && selectedObject) {
-      selectedObject.clone().then((cloned) => {
+      selectedObject.clone().then((cloned: any) => {
+        fabricCanvas.discardActiveObject();
         cloned.set({
           left: selectedObject.left + 20,
           top: selectedObject.top + 20,
+          evented: true,
         });
-        fabricCanvas.add(cloned);
+        if (cloned instanceof ActiveSelection) {
+          cloned.canvas = fabricCanvas;
+          cloned.forEachObject((obj: any) => {
+            fabricCanvas.add(obj);
+          });
+          cloned.setCoords();
+        } else {
+          fabricCanvas.add(cloned);
+        }
         fabricCanvas.setActiveObject(cloned);
-        fabricCanvas.renderAll();
+        fabricCanvas.requestRenderAll();
+        saveHistory();
+        triggerRefresh();
       });
     }
   };
@@ -903,10 +981,19 @@ export default function App() {
           top: cloned.top + 20,
           evented: true,
         });
-        fabricCanvas.add(cloned);
+        if (cloned instanceof ActiveSelection) {
+          cloned.canvas = fabricCanvas;
+          cloned.forEachObject((obj: any) => {
+            fabricCanvas.add(obj);
+          });
+          cloned.setCoords();
+        } else {
+          fabricCanvas.add(cloned);
+        }
         fabricCanvas.setActiveObject(cloned);
         fabricCanvas.requestRenderAll();
         saveHistory();
+        triggerRefresh();
       });
     }
   };
@@ -948,6 +1035,9 @@ export default function App() {
           y: yPos
         });
 
+        const activeObjects = fabricCanvas.getActiveObjects();
+        setIsMultiSelect(activeObjects.length > 1);
+
         // Check if it's a mask pair (1 image + 1 shape)
         if (activeObjects.length === 2) {
           const hasImage = activeObjects.some(obj => obj instanceof FabricImage && !obj.clipPath);
@@ -964,11 +1054,14 @@ export default function App() {
 
         // Check if locked
         setIsLocked(!!activeObject.lockMovementX);
+        setIsGroup(activeObject instanceof Group);
       } else {
         setToolbarPos(null);
         setIsMaskPair(false);
         setIsMaskedObject(false);
         setIsLocked(false);
+        setIsMultiSelect(false);
+        setIsGroup(false);
       }
     };
 
@@ -987,7 +1080,7 @@ export default function App() {
       fabricCanvas.off('object:scaling', updateToolbarPos);
       fabricCanvas.off('object:rotating', updateToolbarPos);
     };
-  }, [fabricCanvas, isMaskEditing]);
+  }, [fabricCanvas, isMaskEditing, refresh]);
 
   // Keyboard Shortcuts
   useEffect(() => {
@@ -1208,7 +1301,7 @@ export default function App() {
               {/* Desktop Tabs */}
               {!isMobile && (
                 <div className="flex bg-black/20 p-1 rounded-xl gap-1 overflow-x-auto no-scrollbar">
-                  {(['size', 'banners', 'text', 'image', 'shapes', 'frame', 'layers'] as const).map((tab) => (
+                  {(['size', 'banners', 'text', 'image', 'shapes', 'layers'] as const).map((tab) => (
                     <button
                       key={tab}
                       onClick={() => setActiveTab(tab)}
@@ -1220,8 +1313,7 @@ export default function App() {
                       {tab === 'banners' && 'Banner'}
                       {tab === 'text' && 'Chữ'}
                       {tab === 'image' && 'Ảnh'}
-                      {tab === 'shapes' && 'Hình'}
-                      {tab === 'frame' && 'Khung'}
+                      {tab === 'shapes' && 'Hình & Khung'}
                       {tab === 'layers' && 'Lớp'}
                     </button>
                   ))}
@@ -1236,8 +1328,7 @@ export default function App() {
                     {activeTab === 'banners' && 'Mẫu Banner'}
                     {activeTab === 'text' && 'Văn bản'}
                     {activeTab === 'image' && 'Hình ảnh'}
-                    {activeTab === 'shapes' && 'Hình khối'}
-                    {activeTab === 'frame' && 'Khung hình'}
+                    {activeTab === 'shapes' && 'Hình & Khung'}
                     {activeTab === 'layers' && 'Lớp đối tượng'}
                   </h2>
                   <button onClick={() => setSidebarOpen(false)} className="p-2 bg-white/5 rounded-full">
@@ -1548,75 +1639,96 @@ export default function App() {
             )}
 
             {activeTab === 'shapes' && (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-2 gap-3">
-                <button 
-                  onClick={() => addShape('rect')}
-                  className="p-4 bg-zinc-900 hover:bg-indigo-600/20 border border-white/5 rounded-2xl flex flex-col items-center gap-2 transition-all"
-                >
-                  <Square className="w-6 h-6" />
-                  <span className="text-[10px] font-medium">Hình vuông</span>
-                </button>
-                <button 
-                  onClick={() => addShape('circle')}
-                  className="p-4 bg-zinc-900 hover:bg-indigo-600/20 border border-white/5 rounded-2xl flex flex-col items-center gap-2 transition-all"
-                >
-                  <CircleIcon className="w-6 h-6" />
-                  <span className="text-[10px] font-medium">Hình tròn</span>
-                </button>
-                <button 
-                  onClick={() => addShape('hexagon')}
-                  className="p-4 bg-zinc-900 hover:bg-indigo-600/20 border border-white/5 rounded-2xl flex flex-col items-center gap-2 transition-all"
-                >
-                  <HexagonIcon className="w-6 h-6" />
-                  <span className="text-[10px] font-medium">Lục giác</span>
-                </button>
-              </motion.div>
-            )}
-
-            {activeTab === 'frame' && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-                <div className="grid grid-cols-2 gap-3">
-                  <button 
-                    onClick={() => addFrame('default')}
-                    className="p-4 bg-zinc-900 hover:bg-indigo-600/20 border border-white/5 rounded-2xl flex flex-col items-center gap-2 transition-all group"
-                  >
-                    <div className="w-10 h-10 bg-zinc-800 rounded-xl flex items-center justify-center group-hover:bg-indigo-600 transition-colors">
-                      <Frame className="w-5 h-5" />
-                    </div>
-                    <span className="text-[10px] font-medium">Khung tự do</span>
-                  </button>
-                  <button 
-                    onClick={() => addFrame('canvas')}
-                    className="p-4 bg-zinc-900 hover:bg-indigo-600/20 border border-white/5 rounded-2xl flex flex-col items-center gap-2 transition-all group"
-                  >
-                    <div className="w-10 h-10 bg-zinc-800 rounded-xl flex items-center justify-center group-hover:bg-indigo-600 transition-colors">
-                      <Maximize className="w-5 h-5" />
-                    </div>
-                    <span className="text-[10px] font-medium">Khung viền Canvas</span>
-                  </button>
+                <div className="space-y-4">
+                  <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Thêm hình khối</p>
+                  <div className="grid grid-cols-3 gap-3">
+                    <button 
+                      onClick={() => addShape('rect')}
+                      className="p-3 bg-zinc-900 hover:bg-indigo-600/20 border border-white/5 rounded-2xl flex flex-col items-center gap-2 transition-all"
+                    >
+                      <Square className="w-5 h-5" />
+                      <span className="text-[9px] font-medium">Vuông</span>
+                    </button>
+                    <button 
+                      onClick={() => addShape('circle')}
+                      className="p-3 bg-zinc-900 hover:bg-indigo-600/20 border border-white/5 rounded-2xl flex flex-col items-center gap-2 transition-all"
+                    >
+                      <CircleIcon className="w-5 h-5" />
+                      <span className="text-[9px] font-medium">Tròn</span>
+                    </button>
+                    <button 
+                      onClick={() => addShape('hexagon')}
+                      className="p-3 bg-zinc-900 hover:bg-indigo-600/20 border border-white/5 rounded-2xl flex flex-col items-center gap-2 transition-all"
+                    >
+                      <HexagonIcon className="w-5 h-5" />
+                      <span className="text-[9px] font-medium">Lục giác</span>
+                    </button>
+                  </div>
                 </div>
 
-                {selectedObject instanceof Rect && (
+                <div className="space-y-4">
+                  <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Thêm khung hình</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button 
+                      onClick={() => addFrame('default')}
+                      className="p-4 bg-zinc-900 hover:bg-indigo-600/20 border border-white/5 rounded-2xl flex flex-col items-center gap-2 transition-all group"
+                    >
+                      <div className="w-10 h-10 bg-zinc-800 rounded-xl flex items-center justify-center group-hover:bg-indigo-600 transition-colors">
+                        <Frame className="w-5 h-5" />
+                      </div>
+                      <span className="text-[10px] font-medium">Khung tự do</span>
+                    </button>
+                    <button 
+                      onClick={() => addFrame('canvas')}
+                      className="p-4 bg-zinc-900 hover:bg-indigo-600/20 border border-white/5 rounded-2xl flex flex-col items-center gap-2 transition-all group"
+                    >
+                      <div className="w-10 h-10 bg-zinc-800 rounded-xl flex items-center justify-center group-hover:bg-indigo-600 transition-colors">
+                        <Maximize className="w-5 h-5" />
+                      </div>
+                      <span className="text-[10px] font-medium">Khung viền Canvas</span>
+                    </button>
+                  </div>
+                </div>
+
+                {(selectedObject instanceof Rect || selectedObject instanceof Circle || selectedObject instanceof Triangle || selectedObject instanceof Polygon) && (
                   <div className="space-y-6">
                     <div className="p-4 bg-black/20 rounded-2xl space-y-4">
-                      <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Tùy chỉnh khung</p>
+                      <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Tùy chỉnh hình khối</p>
                       
-                      <div className="space-y-2">
-                        <div className="flex justify-between items-center">
-                          <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Bo góc</label>
-                          <span className="text-[10px] text-zinc-400">{selectedObject.rx}px</span>
+                      {selectedObject instanceof Rect && (
+                        <div className="space-y-2">
+                          <div className="flex justify-between items-center">
+                            <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Bo góc</label>
+                            <span className="text-[10px] text-zinc-400">{selectedObject.rx}px</span>
+                          </div>
+                          <input 
+                            type="range" min="0" max="200" step="1"
+                            value={selectedObject.rx}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              updateObjectProperty('rx', val);
+                              updateObjectProperty('ry', val);
+                            }}
+                            className="w-full accent-indigo-600"
+                          />
                         </div>
-                        <input 
-                          type="range" min="0" max="200" step="1"
-                          value={selectedObject.rx}
-                          onChange={(e) => {
-                            const val = Number(e.target.value);
-                            updateObjectProperty('rx', val);
-                            updateObjectProperty('ry', val);
-                          }}
-                          className="w-full accent-indigo-600"
-                        />
-                      </div>
+                      )}
+
+                      {selectedObject instanceof Circle && (
+                        <div className="space-y-2">
+                          <div className="flex justify-between items-center">
+                            <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Bán kính</label>
+                            <span className="text-[10px] text-zinc-400">{Math.round(selectedObject.radius || 0)}px</span>
+                          </div>
+                          <input 
+                            type="range" min="1" max="500" step="1"
+                            value={selectedObject.radius}
+                            onChange={(e) => updateObjectProperty('radius', Number(e.target.value))}
+                            className="w-full accent-indigo-600"
+                          />
+                        </div>
+                      )}
 
                       <div className="space-y-2">
                         <div className="flex justify-between items-center">
@@ -1677,9 +1789,15 @@ export default function App() {
                               key={color}
                               onClick={() => updateObjectProperty('fill', color)}
                               className={`w-6 h-6 rounded-md border border-white/10 ${selectedObject.fill === color ? 'ring-2 ring-indigo-500' : ''}`}
-                              style={{ backgroundColor: color === 'transparent' ? 'white' : color, backgroundImage: color === 'transparent' ? 'linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc), linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc)' : 'none', backgroundSize: color === 'transparent' ? '8px 8px' : 'auto', backgroundPosition: color === 'transparent' ? '0 0, 4px 4px' : '0 0' }}
+                              style={{ backgroundColor: color === 'transparent' ? 'white' : color, backgroundImage: color === 'transparent' ? 'linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc) , linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc)' : 'none', backgroundSize: color === 'transparent' ? '8px 8px' : 'auto', backgroundPosition: color === 'transparent' ? '0 0, 4px 4px' : '0 0' }}
                             />
                           ))}
+                          <input 
+                            type="color" 
+                            value={typeof selectedObject.fill === 'string' ? selectedObject.fill : '#ffffff'}
+                            onChange={(e) => updateObjectProperty('fill', e.target.value)}
+                            className="w-6 h-6 rounded-md bg-transparent border-none cursor-pointer"
+                          />
                         </div>
                       </div>
 
@@ -1964,15 +2082,35 @@ export default function App() {
                     <div className="p-4 bg-black/20 rounded-2xl space-y-4">
                       <div className="flex items-center justify-between">
                         <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Danh sách lớp</p>
-                        <button 
-                          onClick={() => setMultiSelectMode(!multiSelectMode)}
-                          className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all flex items-center gap-2 ${
-                            multiSelectMode ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'bg-zinc-800 text-zinc-400 border border-white/5'
-                          }`}
-                        >
-                          <Layers className="w-3 h-3" />
-                          {multiSelectMode ? 'Đang chọn nhiều' : 'Chọn nhiều'}
-                        </button>
+                        <div className="flex gap-2">
+                          {isMultiSelect && (
+                            <button 
+                              onClick={groupSelected}
+                              className="px-3 py-1.5 rounded-lg text-[10px] font-bold bg-indigo-600 text-white shadow-lg shadow-indigo-600/20 transition-all flex items-center gap-2"
+                            >
+                              <Combine className="w-3 h-3" />
+                              Gộp
+                            </button>
+                          )}
+                          {isGroup && (
+                            <button 
+                              onClick={ungroupSelected}
+                              className="px-3 py-1.5 rounded-lg text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 transition-all flex items-center gap-2"
+                            >
+                              <Ungroup className="w-3 h-3" />
+                              Rã
+                            </button>
+                          )}
+                          <button 
+                            onClick={() => setMultiSelectMode(!multiSelectMode)}
+                            className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all flex items-center gap-2 ${
+                              multiSelectMode ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'bg-zinc-800 text-zinc-400 border border-white/5'
+                            }`}
+                          >
+                            <Layers className="w-3 h-3" />
+                            {multiSelectMode ? 'Đang chọn nhiều' : 'Chọn nhiều'}
+                          </button>
+                        </div>
                       </div>
                       <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                         {fabricCanvas.getObjects().slice().reverse().map((obj, idx) => {
@@ -1994,6 +2132,9 @@ export default function App() {
                           } else if (obj instanceof Triangle) {
                             icon = <TriangleIcon className="w-3 h-3" />;
                             name = "Hình tam giác";
+                          } else if (obj instanceof Group) {
+                            icon = <Combine className="w-3 h-3" />;
+                            name = "Nhóm đối tượng";
                           }
 
                           return (
@@ -2093,6 +2234,19 @@ export default function App() {
                                 >
                                   {isObjLocked ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}
                                 </button>
+                                {obj instanceof Group && (
+                                  <button 
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      fabricCanvas.setActiveObject(obj);
+                                      ungroupSelected();
+                                    }}
+                                    className="p-1.5 hover:bg-amber-500/10 rounded-md text-amber-500 hover:text-amber-400 transition-colors"
+                                    title="Rã nhóm"
+                                  >
+                                    <Ungroup className="w-3 h-3" />
+                                  </button>
+                                )}
                               </div>
                             </div>
                           );
@@ -2103,6 +2257,24 @@ export default function App() {
                     <div className="p-4 bg-black/20 rounded-2xl space-y-4">
                       <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Quản lý lớp</p>
                       <div className="grid grid-cols-2 gap-2">
+                        {isMultiSelect && (
+                          <button 
+                            onClick={groupSelected}
+                            className="p-3 bg-indigo-600 hover:bg-indigo-500 rounded-xl flex items-center justify-center gap-2 text-[10px] font-bold text-white transition-all col-span-2"
+                          >
+                            <Combine className="w-4 h-4" />
+                            Gộp các lớp đã chọn
+                          </button>
+                        )}
+                        {isGroup && (
+                          <button 
+                            onClick={ungroupSelected}
+                            className="p-3 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 rounded-xl flex items-center justify-center gap-2 text-[10px] font-bold transition-all col-span-2 border border-amber-500/30"
+                          >
+                            <Ungroup className="w-4 h-4" />
+                            Rã nhóm đối tượng
+                          </button>
+                        )}
                         <button 
                           onClick={bringToFront}
                           className="p-3 bg-zinc-900 hover:bg-zinc-800 rounded-xl flex items-center justify-center gap-2 text-[10px] font-medium transition-all"
@@ -2349,19 +2521,217 @@ export default function App() {
           {/* Floating Toolbar for Selected Object - Canva Style Contextual Bottom Bar on Mobile */}
           <AnimatePresence>
             {toolbarPos && !isMaskEditing && (
-              <motion.div
-                initial={{ opacity: 0, y: 50 }}
-                animate={{ 
-                  opacity: 1, 
-                  y: 0,
+              <div className={`${isMobile ? 'fixed' : 'absolute'} z-40 -translate-x-1/2 flex flex-col items-center gap-2 max-w-[95vw]`}
+                style={{
                   left: isMobile ? '50%' : toolbarPos.x,
                   top: isMobile ? 'auto' : toolbarPos.y,
                   bottom: isMobile ? 84 : 'auto'
                 }}
-                exit={{ opacity: 0, y: 50 }}
-                className={`${isMobile ? 'fixed' : 'absolute'} z-40 -translate-x-1/2 flex items-center gap-1 p-2 bg-[#1a1a1e] border border-white/10 rounded-2xl shadow-2xl backdrop-blur-xl max-w-[95vw] overflow-x-auto no-scrollbar`}
               >
-                  {isMaskPair && (
+                {/* Property Popovers */}
+                <AnimatePresence>
+                  {activePropertyPopover && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                      className="mb-2 p-3 bg-[#1a1a1e] border border-white/10 rounded-2xl shadow-2xl backdrop-blur-xl w-full flex flex-col gap-3 min-w-[280px]"
+                    >
+                      <div className="flex items-center justify-between border-b border-white/5 pb-2">
+                        <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
+                          {activePropertyPopover === 'color' && 'Màu sắc'}
+                          {activePropertyPopover === 'font' && 'Phông chữ'}
+                          {activePropertyPopover === 'size' && 'Kích thước'}
+                          {activePropertyPopover === 'stroke' && 'Đường viền'}
+                          {activePropertyPopover === 'radius' && 'Bo góc'}
+                        </span>
+                        <button onClick={() => setActivePropertyPopover(null)} className="p-1 hover:bg-white/5 rounded-full">
+                          <X className="w-3 h-3 text-zinc-500" />
+                        </button>
+                      </div>
+
+                      {activePropertyPopover === 'color' && selectedObject && (
+                        <div className="flex gap-2 flex-wrap max-h-32 overflow-y-auto no-scrollbar p-1">
+                          {['transparent', '#ffffff', '#000000', '#6366f1', '#f43f5e', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'].map((color) => (
+                            <button
+                              key={color}
+                              onClick={() => updateObjectProperty(selectedObject instanceof IText ? 'fill' : 'fill', color)}
+                              className={`w-8 h-8 rounded-lg border border-white/10 ${selectedObject.fill === color ? 'ring-2 ring-indigo-500' : ''}`}
+                              style={{ backgroundColor: color === 'transparent' ? 'white' : color, backgroundImage: color === 'transparent' ? 'linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc) , linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc)' : 'none', backgroundSize: color === 'transparent' ? '8px 8px' : 'auto', backgroundPosition: color === 'transparent' ? '0 0, 4px 4px' : '0 0' }}
+                            />
+                          ))}
+                          <input 
+                            type="color" 
+                            value={typeof selectedObject.fill === 'string' ? selectedObject.fill : '#ffffff'}
+                            onChange={(e) => updateObjectProperty('fill', e.target.value)}
+                            className="w-8 h-8 rounded-lg bg-transparent border-none cursor-pointer"
+                          />
+                        </div>
+                      )}
+
+                      {activePropertyPopover === 'font' && selectedObject instanceof IText && (
+                        <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto no-scrollbar p-1">
+                          {FONTS.map(font => (
+                            <button
+                              key={font}
+                              onClick={() => updateObjectProperty('fontFamily', font)}
+                              className={`px-3 py-2 rounded-lg text-[10px] font-medium text-left transition-all ${selectedObject.fontFamily === font ? 'bg-indigo-600 text-white' : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}
+                              style={{ fontFamily: font }}
+                            >
+                              {font}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {activePropertyPopover === 'size' && selectedObject instanceof IText && (
+                        <div className="space-y-3 p-1">
+                          <div className="flex justify-between items-center">
+                            <span className="text-[10px] text-zinc-400">{selectedObject.fontSize}px</span>
+                          </div>
+                          <input 
+                            type="range" min="10" max="200"
+                            value={selectedObject.fontSize}
+                            onChange={(e) => updateObjectProperty('fontSize', Number(e.target.value))}
+                            className="w-full accent-indigo-600"
+                          />
+                        </div>
+                      )}
+
+                      {activePropertyPopover === 'stroke' && selectedObject && (
+                        <div className="space-y-4 p-1">
+                          <div className="space-y-2">
+                            <div className="flex justify-between items-center">
+                              <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Độ dày</label>
+                              <span className="text-[10px] text-zinc-400">{selectedObject.strokeWidth}px</span>
+                            </div>
+                            <input 
+                              type="range" min="0" max="50" step="1"
+                              value={selectedObject.strokeWidth}
+                              onChange={(e) => updateObjectProperty('strokeWidth', Number(e.target.value))}
+                              className="w-full accent-indigo-600"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Màu viền</label>
+                            <div className="flex gap-2 flex-wrap">
+                              {['#ffffff', '#000000', '#6366f1', '#f43f5e', '#10b981'].map((color) => (
+                                <button
+                                  key={color}
+                                  onClick={() => updateObjectProperty('stroke', color)}
+                                  className={`w-6 h-6 rounded-md border border-white/10 ${selectedObject.stroke === color ? 'ring-2 ring-indigo-500' : ''}`}
+                                  style={{ backgroundColor: color }}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {activePropertyPopover === 'radius' && selectedObject instanceof Rect && (
+                        <div className="space-y-3 p-1">
+                          <div className="flex justify-between items-center">
+                            <span className="text-[10px] text-zinc-400">{selectedObject.rx}px</span>
+                          </div>
+                          <input 
+                            type="range" min="0" max="200" step="1"
+                            value={selectedObject.rx}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              updateObjectProperty('rx', val);
+                              updateObjectProperty('ry', val);
+                            }}
+                            className="w-full accent-indigo-600"
+                          />
+                        </div>
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 20 }}
+                  className="flex items-center gap-1 p-2 bg-[#1a1a1e] border border-white/10 rounded-2xl shadow-2xl backdrop-blur-xl max-w-[95vw] overflow-x-auto no-scrollbar"
+                >
+                    {/* Contextual Property Buttons */}
+                    {selectedObject instanceof IText && (
+                      <>
+                        <button 
+                          onClick={() => setActivePropertyPopover(activePropertyPopover === 'color' ? null : 'color')}
+                          className={`p-2 rounded-lg transition-colors ${activePropertyPopover === 'color' ? 'bg-indigo-600 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}
+                          title="Màu chữ"
+                        >
+                          <Palette className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => setActivePropertyPopover(activePropertyPopover === 'font' ? null : 'font')}
+                          className={`p-2 rounded-lg transition-colors ${activePropertyPopover === 'font' ? 'bg-indigo-600 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}
+                          title="Phông chữ"
+                        >
+                          <Type className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => setActivePropertyPopover(activePropertyPopover === 'size' ? null : 'size')}
+                          className={`p-2 rounded-lg transition-colors ${activePropertyPopover === 'size' ? 'bg-indigo-600 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}
+                          title="Cỡ chữ"
+                        >
+                          <Baseline className="w-4 h-4" />
+                        </button>
+                        <div className="w-px h-4 bg-white/10 mx-1" />
+                        <button 
+                          onClick={() => updateObjectProperty('fontWeight', null)}
+                          className={`p-2 rounded-lg transition-colors ${selectedObject.fontWeight === 'bold' ? 'bg-indigo-600 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}
+                        >
+                          <Bold className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => updateObjectProperty('fontStyle', null)}
+                          className={`p-2 rounded-lg transition-colors ${selectedObject.fontStyle === 'italic' ? 'bg-indigo-600 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}
+                        >
+                          <Italic className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => updateObjectProperty('textAlign', 'center')}
+                          className={`p-2 rounded-lg transition-colors ${selectedObject.textAlign === 'center' ? 'bg-indigo-600 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}
+                        >
+                          <AlignCenter className="w-4 h-4" />
+                        </button>
+                        <div className="w-px h-4 bg-white/10 mx-1" />
+                      </>
+                    )}
+
+                    {(selectedObject instanceof Rect || selectedObject instanceof Circle || selectedObject instanceof Polygon || selectedObject instanceof Triangle) && (
+                      <>
+                        <button 
+                          onClick={() => setActivePropertyPopover(activePropertyPopover === 'color' ? null : 'color')}
+                          className={`p-2 rounded-lg transition-colors ${activePropertyPopover === 'color' ? 'bg-indigo-600 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}
+                          title="Màu nền"
+                        >
+                          <Palette className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => setActivePropertyPopover(activePropertyPopover === 'stroke' ? null : 'stroke')}
+                          className={`p-2 rounded-lg transition-colors ${activePropertyPopover === 'stroke' ? 'bg-indigo-600 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}
+                          title="Đường viền"
+                        >
+                          <Baseline className="w-4 h-4" />
+                        </button>
+                        {selectedObject instanceof Rect && (
+                          <button 
+                            onClick={() => setActivePropertyPopover(activePropertyPopover === 'radius' ? null : 'radius')}
+                            className={`p-2 rounded-lg transition-colors ${activePropertyPopover === 'radius' ? 'bg-indigo-600 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}
+                            title="Bo góc"
+                          >
+                            <SquareIcon className="w-4 h-4" />
+                          </button>
+                        )}
+                        <div className="w-px h-4 bg-white/10 mx-1" />
+                      </>
+                    )}
+
+                    {isMaskPair && (
                     <>
                       <button 
                         onClick={applyMask}
@@ -2412,6 +2782,10 @@ export default function App() {
                   )}
                   {selectedObject instanceof FabricImage && (
                     <>
+                      <label className="p-2 hover:bg-white/5 text-zinc-400 hover:text-white rounded-lg transition-colors cursor-pointer">
+                        <ImageIcon className="w-4 h-4" />
+                        <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
+                      </label>
                       <button 
                         onClick={fitToCanvas}
                         className="p-2 hover:bg-white/5 text-zinc-400 hover:text-white rounded-lg transition-colors"
@@ -2429,6 +2803,25 @@ export default function App() {
                   >
                     {isLocked ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
                   </button>
+                  <div className="w-px h-4 bg-white/10 mx-1" />
+                  {isMultiSelect && (
+                    <button 
+                      onClick={groupSelected}
+                      className="p-2 hover:bg-indigo-500/20 text-indigo-400 rounded-lg transition-colors"
+                      title="Gộp nhóm"
+                    >
+                      <Combine className="w-4 h-4" />
+                    </button>
+                  )}
+                  {isGroup && (
+                    <button 
+                      onClick={ungroupSelected}
+                      className="p-2 hover:bg-amber-500/20 text-amber-400 rounded-lg transition-colors"
+                      title="Rã nhóm"
+                    >
+                      <Ungroup className="w-4 h-4" />
+                    </button>
+                  )}
                   <div className="w-px h-4 bg-white/10 mx-1" />
                   <button 
                     onClick={bringForward}
@@ -2468,8 +2861,9 @@ export default function App() {
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </motion.div>
-              )}
-            </AnimatePresence>
+              </div>
+            )}
+          </AnimatePresence>
 
             {/* Project Name Modal */}
             <AnimatePresence>
@@ -2672,7 +3066,7 @@ export default function App() {
                     <div className="p-6 grid grid-cols-3 gap-4">
                       {[
                         { id: 'banners', icon: Layout, label: 'Mẫu Banner' },
-                        { id: 'frame', icon: Frame, label: 'Khung hình' },
+                        { id: 'shapes', icon: Frame, label: 'Khung hình' },
                         { id: 'layers', icon: Layers, label: 'Lớp đối tượng' },
                         { id: 'size', icon: Settings2, label: 'Cài đặt canvas' },
                         { id: 'export', icon: Download, label: 'Xuất ảnh', action: () => setExportMenuOpen(true) },
@@ -2738,4 +3132,3 @@ export default function App() {
       </div>
     );
   }
-
