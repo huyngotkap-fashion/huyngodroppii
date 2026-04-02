@@ -254,6 +254,7 @@ export default function App() {
         width: canvasWidth,
         height: canvasHeight,
         backgroundColor: bgColor,
+        enableRetinaScaling: true,
       });
 
       canvas.on('selection:created', (e) => {
@@ -862,8 +863,10 @@ export default function App() {
   };
 
   // Export
-  const exportImage = (multiplier: number = 1) => {
+  const exportImage = (multiplier: number = 2) => {
     if (fabricCanvas) {
+      // Temporarily set zoom to 1 for high quality export if needed?
+      // Actually multiplier handles it, but we want to ensure we get the full resolution.
       const dataURL = fabricCanvas.toDataURL({
         format: 'png',
         quality: 1,
@@ -885,8 +888,17 @@ export default function App() {
       return;
     }
     if (fabricCanvas) {
-      const json = fabricCanvas.toJSON();
-      const blob = new Blob([JSON.stringify(json)], { type: 'application/json' });
+      const json = fabricCanvas.toJSON(['id', 'selectable', 'lockMovementX', 'lockMovementY', 'lockScalingX', 'lockScalingY', 'lockRotation', 'hasControls', 'clipPath', 'name', 'data']);
+      // Add custom metadata
+      const projectData = {
+        version: '1.0',
+        canvasWidth,
+        canvasHeight,
+        bgColor,
+        fabricJSON: json
+      };
+      
+      const blob = new Blob([JSON.stringify(projectData)], { type: 'application/json' });
       const link = document.createElement('a');
       link.download = `${projectName}.json`;
       link.href = URL.createObjectURL(blob);
@@ -901,8 +913,15 @@ export default function App() {
       
       // Trigger save after setting name
       if (fabricCanvas) {
-        const json = fabricCanvas.toJSON();
-        const blob = new Blob([JSON.stringify(json)], { type: 'application/json' });
+        const json = fabricCanvas.toJSON(['id', 'selectable', 'lockMovementX', 'lockMovementY', 'lockScalingX', 'lockScalingY', 'lockRotation', 'hasControls', 'clipPath', 'name', 'data']);
+        const projectData = {
+          version: '1.0',
+          canvasWidth,
+          canvasHeight,
+          bgColor,
+          fabricJSON: json
+        };
+        const blob = new Blob([JSON.stringify(projectData)], { type: 'application/json' });
         const link = document.createElement('a');
         link.download = `${tempProjectName.trim()}.json`;
         link.href = URL.createObjectURL(blob);
@@ -922,10 +941,32 @@ export default function App() {
       const reader = new FileReader();
       reader.onload = (f) => {
         try {
-          const json = JSON.parse(f.target?.result as string);
-          fabricCanvas.loadFromJSON(json).then(() => {
+          const data = JSON.parse(f.target?.result as string);
+          
+          // Handle both old format (direct JSON) and new format (with metadata)
+          const fabricJSON = data.fabricJSON || data;
+          
+          if (data.canvasWidth) setCanvasWidth(data.canvasWidth);
+          if (data.canvasHeight) setCanvasHeight(data.canvasHeight);
+          if (data.bgColor) {
+            setBgColor(data.bgColor);
+            fabricCanvas.backgroundColor = data.bgColor;
+          }
+
+          fabricCanvas.clear();
+          fabricCanvas.backgroundColor = data.bgColor || '#ffffff';
+          
+          fabricCanvas.loadFromJSON(fabricJSON).then(() => {
+            // Force a re-render and zoom update
             fabricCanvas.renderAll();
             saveHistory();
+            // Trigger a refresh to update UI
+            triggerRefresh();
+            
+            // Re-apply zoom after load to ensure it fits the container
+            setTimeout(() => {
+              setRefresh(prev => prev + 1);
+            }, 100);
           });
         } catch (error) {
           console.error("Error loading project:", error);
@@ -2442,7 +2483,9 @@ export default function App() {
                           }}
                           className="w-full px-4 py-3 text-left hover:bg-indigo-600 rounded-xl transition-colors flex items-center justify-between group"
                         >
-                          <span className="text-xs font-medium">Độ phân giải {m}x</span>
+                          <span className="text-xs font-medium">
+                            Độ phân giải {m}x {m >= 2 && <span className="text-[10px] text-indigo-400 ml-1 font-bold">(Sắc nét)</span>}
+                          </span>
                           <span className="text-[10px] text-zinc-500 group-hover:text-white/70">
                             {canvasWidth * m}x{canvasHeight * m}
                           </span>
